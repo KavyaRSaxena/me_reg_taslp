@@ -31,4 +31,8 @@ python3 M3.py
 ```
 
 # Pre-trained Models
-The pre-trained models for each method are present in **model_weights** folder.
+The pre-trained models for each method are present in the **model_weights** folder.
+
+# Datasets
+The test datasets used are: [ADC2004](ttp://labrosa.ee.columbia.edu/projects/melody/), [MIREX05](ttp://labrosa.ee.columbia.edu/projects/melody/), and [HAR](https://zenodo.org/records/8252222)
+
