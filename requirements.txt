@@ -1,0 +1,6 @@
+python==3.10.13
+keras==2.14.0
+tensorflow==2.14.0
+tensorflow_probability==0.22.1
+mir_eval==0.7
+librosa==0.10.1

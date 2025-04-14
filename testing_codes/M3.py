@@ -20,7 +20,6 @@ from sklearn.model_selection import train_test_split
 import time
 import mir_eval
 import gc
-import matplotlib.pyplot as plt
 import time
 import pdb
 import keras
