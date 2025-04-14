@@ -5,7 +5,7 @@ This repository provides three regression-based approaches (M1, M2, and M3) for 
 
 # Setup
 ## Clone the Repository 
-'''
+```
 git clone https://github.com/KavyaRSaxena/me_reg_taslp
 cd me_reg_taslp
-'''
+```
