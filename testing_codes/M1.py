@@ -1,0 +1,298 @@
+import tensorflow as tf
+from tensorflow.keras.layers import LeakyReLU, ReLU, Input, Conv2D, MaxPooling2D, Dense, Dropout, Activation, Flatten, BatchNormalization, LSTM, Dropout, Reshape, TimeDistributed, add, Bidirectional
+from tensorflow.keras import Model, Sequential
+from sklearn.manifold import TSNE as tsne
+from keras.regularizers import l2
+import numpy as np
+import matplotlib.pyplot as plt
+from glob import glob
+import librosa
+from scipy.io import wavfile
+import csv
+import random
+import os,sys
+import math
+import random
+from sklearn.utils import shuffle
+from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.model_selection import train_test_split
+import time
+import mir_eval
+import gc
+import matplotlib.pyplot as plt
+import time
+import pdb
+import keras
+from tqdm import tqdm
+from scipy.signal import find_peaks
+import scipy.stats as stats
+from scipy.stats import norm
+
+os.environ["CUDA_VISIBLE_DEVICES"]="2" #0
+physical_devices = tf.config.list_physical_devices('GPU')
+print(physical_devices)
+tf.config.experimental.set_memory_growth(physical_devices[0], True)
+
+#################################################
+
+test_audio_files = ' ' #path of audio data
+test_pitch_files = ' ' #path of pitch data in Hz
+
+#################################################
+batch_size = 16
+#################################################
+
+Nfft = 2048
+win_len = 2048
+hop_len = 160
+win_size = 100
+
+freq_min = 51.91
+freq_max = 830.61
+B = 96  # no. of semitones
+
+num_semitones = int(B*np.log2(freq_max/freq_min))
+bin_borders = []
+
+for i in range(num_semitones+1):
+    bin_borders.append(freq_min*np.power(2,i/B))
+bin_borders_log = [np.log2(i/freq_min) for i in bin_borders]
+
+sigma = bin_borders_log[1]-bin_borders_log[0]
+sigma = np.round(sigma,5)
+
+prepend_values = [bin_borders_log[0] - sigma * i for i in range(50, 0, -1)]
+bin_borders_log = prepend_values + bin_borders_log
+
+num_bins = len(bin_borders_log)
+zero_rep_bin = bin_borders_log[0]
+
+#################################################
+
+def preprocess_wav(wav_path):
+    X = np.load(wav_path.numpy().decode())
+    return X
+
+def preprocess_pitch(pitch_path):
+    X = np.load(pitch_path.numpy().decode())
+    return X
+
+#################################################
+
+class ResNet_block(Model):
+    def __init__(self,filters):
+        super().__init__()
+        self.conv1 = Conv2D(filters, (1, 1), padding='same', kernel_initializer='he_normal', kernel_regularizer=l2(1e-5))
+        self.bn1 = BatchNormalization()
+        self.act1 = LeakyReLU(0.01) 
+        self.conv2 = Conv2D(filters, (3, 3), padding='same', kernel_initializer='he_normal', kernel_regularizer=l2(1e-5))
+        self.bn2 = BatchNormalization()
+        self.act2 = LeakyReLU(0.01) 
+        self.conv3 = Conv2D(filters, (3, 3), padding='same', kernel_initializer='he_normal', kernel_regularizer=l2(1e-5))
+        self.bn3 = BatchNormalization()
+        self.act3 = LeakyReLU(0.01) 
+        self.conv4 = Conv2D(filters, (1, 1), padding='same',kernel_initializer='he_normal', kernel_regularizer=l2(1e-5))
+        self.bn4 = BatchNormalization()
+        self.act4 = LeakyReLU(0.01) 
+        self.add = tf.keras.layers.Add()
+        
+        
+    def call(self,input_tensor):
+        x = self.conv1(input_tensor)
+        shortcut = self.bn1(x)
+        x = self.act1(shortcut)
+        x = self.conv2(x)
+        x = self.bn2(x)
+        x = self.act2(x)
+        x = self.conv3(x)
+        x = self.bn3(x)
+        x = self.act3(x)
+        x = self.conv4(x)
+        x = self.bn4(x)
+
+        x = self.add([x, shortcut])
+        x = self.act4(x)
+        x = MaxPooling2D((1, 4))(x)
+        return x
+
+    def build_graph(self,raw_shape):
+        x = tf.keras.layers.Input(shape=raw_shape)
+        return Model(inputs=[x], outputs = self.call(x))
+
+     
+class melody_extraction(Model):
+    def __init__(self):
+        super().__init__()
+        self.rb1 = ResNet_block(32)
+        self.rb2 = ResNet_block(64)
+        self.rb3 = ResNet_block(128)
+        self.rb4 = ResNet_block(256)
+        self.bi = Bidirectional(LSTM(256, return_sequences=True, recurrent_dropout=0.3, dropout=0.3))
+        self.td1 = TimeDistributed(Dense(num_bins-1,activation='softmax'))
+       
+    def call(self,x):
+        x = self.rb1(x)
+        x = self.rb2(x)
+        x = self.rb3(x)
+        x = self.rb4(x)
+        
+        P = x.shape[2] * x.shape[3]
+        intermediate = Reshape((win_size, P))(x)
+        # x = self.bi(x)
+        x = self.td1(intermediate)
+        return x,intermediate
+
+    def build_graph(self,raw_shape):
+        x = tf.keras.layers.Input(shape=raw_shape)
+        return Model(inputs=[x], outputs = self.call(x))
+
+
+model = melody_extraction()
+model.build_graph([win_size,int(Nfft/2)+1,1])#.summary()
+model.load_weights('../model_weights/M1/weights')
+
+#################################################
+
+l_rate = 1.e-4
+loss_fn = keras.losses.CategoricalCrossentropy()
+test_acc_metric = keras.metrics.CategoricalAccuracy()
+
+#################################################
+
+def findpeaks(fx):
+    fx = np.insert(fx,0,0)
+    peaks, _ = find_peaks(fx, height=0)
+    peaks = peaks-1
+    return peaks
+
+def find_max_peak(indx,pred_fx):
+  indxs = indx[np.argmax(pred_fx[indx])]
+  return indxs
+
+
+def get_scaled_up_probabilties(f, indices_to_zero):
+    f[indices_to_zero] = 0  # make q at ksup = 0  
+        # Step 2: Calculate the sum of the remaining values
+    remaining_sum = np.sum(f)  # 1-p(ksup)
+    # Step 3: Scale the remaining values to sum to 1
+    if remaining_sum > 0:
+        f = f / remaining_sum
+    else:
+        raise ValueError("The sum of the remaining probabilities is zero.")
+    return f
+
+def get_freq_val(f):
+    f = freq_min * np.power(2,f)  ## convert log values to hz
+    threshold = freq_min *np.power(2,-0.15/B)
+    if f<threshold:
+        return 0
+    else:
+        return f 
+    
+def find_pruned_expected_val(fx):
+    #fx --> predicted bin prob, expected_val --> predicted log freq, ypred --> predicted freq hz
+    fx = fx.numpy()
+    expected_val = np.zeros((np.shape(fx)[0],np.shape(fx)[1]),dtype=float)
+
+    for k in range(np.shape(fx)[0]):
+        for j in range(np.shape(fx)[1]):
+            peaks = findpeaks(fx[k][j])
+
+            if 0 in peaks and len(peaks)>1:
+                max_peak = find_max_peak(peaks,fx[k][j])
+
+                if fx[k][j][0]>fx[k][j][max_peak]:
+                    fx[k][j] = get_scaled_up_probabilties(fx[k][j],np.arange(max_peak-10,max_peak+10))
+
+                elif fx[k][j][0]<fx[k][j][max_peak]:
+                    fx[k][j] = get_scaled_up_probabilties(fx[k][j],np.arange(10))
+                
+                elif fx[k][j][0]==fx[k][j][max_peak]:
+                    for p in peaks[1:]:
+                        if 2<=p<=10:
+                            fx[k][j] = get_scaled_up_probabilties(fx[k][j],np.arange(p-1,p+10))
+                        elif 400<p<435:
+                            fx[k][j] = get_scaled_up_probabilties(fx[k][j],np.arange(p-10,p))
+                        else:
+                            fx[k][j] = get_scaled_up_probabilties(fx[k][j],np.arange(p-10,p+10))
+
+            expected_val[k,j] = sum([(bin_borders_log[i])*f for i,f in enumerate(fx[k][j])])
+                    
+    freq_hz = freq_min * np.power(2,expected_val)  ## convert log values to hz
+    threshold = freq_min*np.power(2,-0.5/B)
+    freq_hz[freq_hz<threshold] = 0
+    return freq_hz
+
+
+def find_expected_val(fx):
+    fx = fx.numpy()
+    expected_val = np.zeros((np.shape(fx)[0],np.shape(fx)[1]),dtype=float)
+    for k in range(np.shape(fx)[0]):
+        for j in range(np.shape(fx)[1]):
+            expected_val[k,j] = sum([(bin_borders_log[i])*f for i,f in enumerate(fx[k][j])]) 
+    
+    expected_val = freq_min * np.power(2,expected_val)  ## convert log values to hz
+    threshold = freq_min*np.power(2,-0.5/B)
+    expected_val[expected_val<threshold] = 0
+    return expected_val
+    
+
+def test_step(x):
+    with tf.GradientTape() as tape:
+        pred_fx,_ = model.call(x)
+        # efv = find_pruned_expected_val(pred_fx) # can predict before and after pruning P(M1)
+        efv = find_expected_val(pred_fx)
+    return efv
+
+
+def calc_rpa(y,yp):
+    rpa = []
+    rca = []
+    oa = []
+    for i in range(tf.shape(y)[0]):
+        gfv = np.array(y[i])
+        efv = np.array(yp[i])  
+        
+        t = np.array([i*0.01 for i in range(len(gfv))])
+        
+        (ref_v, ref_c,est_v, est_c) = mir_eval.melody.to_cent_voicing(t,gfv,t,efv)
+
+        RPA = mir_eval.melody.raw_pitch_accuracy(ref_v, ref_c,est_v, est_c)
+        RCA = mir_eval.melody.raw_chroma_accuracy(ref_v, ref_c,est_v, est_c)
+        OA = mir_eval.melody.overall_accuracy(ref_v, ref_c,est_v, est_c)
+        rpa.append(RPA)
+        rca.append(RCA)
+        oa.append(OA)
+    rpa=np.mean(np.array(rpa))    
+    rca=np.mean(np.array(rca))    
+    oa=np.mean(np.array(oa))  
+    return rpa,rca,oa
+    
+################################################# 
+
+mean = np.load('../total_mean.npy')
+std = np.load('../total_std.npy')
+
+#################################################
+
+rpa_test = []
+rca_test = []
+oa_test = []
+
+test_dataset = tf.data.Dataset.from_tensor_slices((test_audio_files,test_pitch_files)) 
+test_dataset = test_dataset.map(lambda wav,pitch: (tf.py_function(preprocess_wav,[wav],tf.float32), tf.py_function(preprocess_pitch,[pitch],tf.float32)),num_parallel_calls=tf.data.experimental.AUTOTUNE)
+test_dataset = test_dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+
+for step,batch in enumerate(test_dataset):
+    x,gfv = batch
+    x = (x-mean)/std        
+    x = x[:,:,:,tf.newaxis]
+    efv = test_step(x)
+    rpa,rca,oa = calc_rpa(gfv,efv)
+
+    rpa_test.append(rpa)
+    rca_test.append(rca)
+    oa_test.append(oa)
+
+print(f'Metrics on the test dataset:  RPA-{np.mean(np.array(rpa_test))} RCA-{np.mean(np.array(rca_test))} OA-{np.mean(np.array(oa_test))}')
