@@ -36,3 +36,8 @@ The pre-trained models for each method are present in the **model_weights** fold
 # Datasets
 The test datasets used are: [ADC2004](http://labrosa.ee.columbia.edu/projects/melody/), [MIREX05](http://labrosa.ee.columbia.edu/projects/melody/), and [HAR](https://zenodo.org/records/8252222)
 
+# Citation
+If you find our work useful, please cite:
+```
+Citation
+```
