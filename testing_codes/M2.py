@@ -72,16 +72,70 @@ zero_rep_bin = bin_borders_log[0]
 #################################################
 
 def preprocess_wav(wav_path):
+    """
+    Loads a spectrogram from a .npy file.
+
+    Parameters
+    ----------
+    wav_path : tf.Tensor
+        A TensorFlow string tensor representing the path to a .npy file containing the spectrogram.
+
+    Returns
+    -------
+    np.ndarray
+        A NumPy array containing the spectrogram data.
+    """
+
     X = np.load(wav_path.numpy().decode())
     return X
 
 def preprocess_pitch(pitch_path):
+    """
+    Loads pitch values in Hz from a .npy file.
+
+    Parameters
+    ----------
+    pitch_path : tf.Tensor
+        A TensorFlow string tensor representing the path to a .npy file containing pitch values.
+
+    Returns
+    -------
+    np.ndarray
+        A NumPy array containing pitch values in Hertz (Hz).
+    """
+
     X = np.load(pitch_path.numpy().decode())
     return X
 
 #################################################
 
 class ResNet_block(Model):
+    """
+    A custom ResNet-style convolutional block with four convolutional layers, 
+    batch normalization, LeakyReLU activations, and a residual connection.
+
+    The block performs the following operations:
+    - 1x1 Conv -> BN -> LeakyReLU
+    - 3x3 Conv -> BN -> LeakyReLU
+    - 3x3 Conv -> BN -> LeakyReLU
+    - 1x1 Conv -> BN
+    - Add residual connection (after first BN) to output of final BN
+    - Final LeakyReLU activation and max pooling along the width (1x4)
+
+    Parameters
+    ----------
+    filters : int
+        The number of filters to use in each convolutional layer.
+
+    Methods
+    -------
+    call(input_tensor)
+        Forward pass through the ResNet block.
+    
+    build_graph(raw_shape)
+        Builds and returns a Keras Model with the given input shape.
+    """
+
     def __init__(self,filters):
         super().__init__()
         self.conv1 = Conv2D(filters, (1, 1), padding='same', kernel_initializer='he_normal', kernel_regularizer=l2(1e-5))
@@ -123,13 +177,48 @@ class ResNet_block(Model):
 
      
 class melody_extraction(Model):
+    """
+    A melody extraction model using stacked ResNet blocks and a TimeDistributed dense output layer.
+
+    This model processes an input spectrogram through a series of convolutional ResNet blocks to extract
+    high-level features. These features are reshaped and passed through a TimeDistributed Dense layer 
+    with softmax activation to produce frame-wise pitch probability distributions.
+
+    Architecture:
+    -------------
+    - 4 ResNet-style convolutional blocks with increasing filter sizes.
+    - Reshape layer to flatten spatial dimensions for each time window.
+    - Optional Bidirectional LSTM for temporal modeling (currently commented out).
+    - TimeDistributed Dense layer for outputting probability distribution over frequency bins.
+
+    Returns both:
+    - Final pitch probability predictions (softmax over `num_bins - 1`).
+    - Intermediate features prior to classification.
+
+    Attributes
+    ----------
+    rb1, rb2, rb3, rb4 : ResNet_block
+        Convolutional residual blocks with 32, 64, 128, and 256 filters respectively.
+        
+    td1 : TimeDistributed
+        TimeDistributed Dense layer with softmax activation for pitch classification.
+
+    Methods
+    -------
+    call(x)
+        Forward pass through the model. Returns predicted pitch probabilities and intermediate features.
+    
+    build_graph(raw_shape)
+        Builds and returns a Keras model instance using the defined architecture, 
+        useful for visualizing model summaries and plotting.
+    """
+
     def __init__(self):
         super().__init__()
         self.rb1 = ResNet_block(32)
         self.rb2 = ResNet_block(64)
         self.rb3 = ResNet_block(128)
         self.rb4 = ResNet_block(256)
-        self.bi = Bidirectional(LSTM(256, return_sequences=True, recurrent_dropout=0.3, dropout=0.3))
         self.td1 = TimeDistributed(Dense(num_bins-1,activation='softmax'))
        
     def call(self,x):
@@ -140,7 +229,6 @@ class melody_extraction(Model):
         
         P = x.shape[2] * x.shape[3]
         intermediate = Reshape((win_size, P))(x)
-        # x = self.bi(x)
         x = self.td1(intermediate)
         return x,intermediate
 
@@ -162,6 +250,25 @@ test_acc_metric = keras.metrics.CategoricalAccuracy()
 #################################################
 
 def find_expected_val(fx):
+    """
+    Computes the expected frequency values in Hz from predicted probability distributions over frequency bins.
+
+    This function calculates the expected value for each probability distribution over frequency bins 
+    (in the log-frequency domain), converts it to Hz, and applies a lower threshold to remove 
+    unrealistically low frequencies.
+
+    Parameters
+    ----------
+    fx : tf.Tensor
+        A 3D TensorFlow tensor of shape (batch_size, time_steps, num_bins), where each [k, j, :] slice 
+        represents a probability distribution over frequency bins for a given frame.
+
+    Returns
+    -------
+    np.ndarray
+        A 2D NumPy array of shape (batch_size, time_steps) containing the expected frequency values in Hz.
+    """
+
     fx = fx.numpy()
     expected_val = np.zeros((np.shape(fx)[0],np.shape(fx)[1]),dtype=float)
     for k in range(np.shape(fx)[0]):

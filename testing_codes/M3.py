@@ -67,16 +67,70 @@ print(f'Number of bins...{num_bins}')
 #################################################
 
 def preprocess_wav(wav_path):
+    """
+    Loads a spectrogram from a .npy file.
+
+    Parameters
+    ----------
+    wav_path : tf.Tensor
+        A TensorFlow string tensor representing the path to a .npy file containing the spectrogram.
+
+    Returns
+    -------
+    np.ndarray
+        A NumPy array containing the spectrogram data.
+    """
+
     X = np.load(wav_path.numpy().decode())
     return X
 
 def preprocess_pitch(pitch_path):
+    """
+    Loads pitch values in Hz from a .npy file.
+
+    Parameters
+    ----------
+    pitch_path : tf.Tensor
+        A TensorFlow string tensor representing the path to a .npy file containing pitch values.
+
+    Returns
+    -------
+    np.ndarray
+        A NumPy array containing pitch values in Hertz (Hz).
+    """
+
     X = np.load(pitch_path.numpy().decode())
     return X
 
 #################################################
 
 class ResNet_block(Model):
+    """
+    A custom ResNet-style convolutional block with four convolutional layers, 
+    batch normalization, LeakyReLU activations, and a residual connection.
+
+    The block performs the following operations:
+    - 1x1 Conv -> BN -> LeakyReLU
+    - 3x3 Conv -> BN -> LeakyReLU
+    - 3x3 Conv -> BN -> LeakyReLU
+    - 1x1 Conv -> BN
+    - Add residual connection (after first BN) to output of final BN
+    - Final LeakyReLU activation and max pooling along the width (1x4)
+
+    Parameters
+    ----------
+    filters : int
+        The number of filters to use in each convolutional layer.
+
+    Methods
+    -------
+    call(input_tensor)
+        Forward pass through the ResNet block.
+    
+    build_graph(raw_shape)
+        Builds and returns a Keras Model with the given input shape.
+    """
+
     def __init__(self,filters):
         super().__init__()
         self.conv1 = Conv2D(filters, (1, 1), padding='same', kernel_initializer='he_normal', kernel_regularizer=l2(1e-5))
@@ -118,13 +172,54 @@ class ResNet_block(Model):
 
      
 class melody(Model):
+    """
+    A dual-branch neural network model for melody extraction, predicting both voicing and pitch class.
+
+    This model processes input spectrogram-like features using stacked ResNet blocks to extract 
+    hierarchical representations. It then reshapes the features and feeds them into two parallel 
+    branches:
+
+    - **Voicing Branch**: A Dense layer with sigmoid activation that predicts the probability 
+      of whether a pitch is voiced (i.e., present) for each frame.
+    
+    - **F0 Branch**: A TimeDistributed Dense layer with softmax activation that outputs the 
+      probability distribution over pitch bins (excluding unvoiced).
+
+    Architecture:
+    -------------
+    - 4 ResNet-style convolutional blocks with increasing filter sizes (32 → 256).
+    - Reshape layer to convert convolutional outputs to a sequence format.
+    - Voicing branch for binary classification (voiced/unvoiced).
+    - Pitch (f0) branch for multi-class pitch prediction.
+
+    Attributes
+    ----------
+    rb1, rb2, rb3, rb4 : ResNet_block
+        Residual convolutional blocks for feature extraction.
+
+    voicing_branch : tf.keras.layers.Dense
+        Dense layer with sigmoid activation to predict voicing per time frame.
+
+    f0_branch : tf.keras.layers.TimeDistributed
+        TimeDistributed Dense layer with softmax activation to predict pitch class probabilities.
+
+    Methods
+    -------
+    call(x)
+        Runs a forward pass through the model and returns:
+        - `vd`: Voicing predictions (shape: [batch_size, time_steps, 1])
+        - `pd`: Pitch bin predictions (shape: [batch_size, time_steps, num_bins - 1])
+    
+    build_graph(raw_shape)
+        Utility method to create and return a `tf.keras.Model` instance for visualization or summary.
+
+    """
     def __init__(self):
         super().__init__()
         self.rb1 = ResNet_block(32)
         self.rb2 = ResNet_block(64)
         self.rb3 = ResNet_block(128)
         self.rb4 = ResNet_block(256)
-        # self.bi = Bidirectional(LSTM(256, return_sequences=True, recurrent_dropout=0.3, dropout=0.3))
         self.voicing_branch = Dense(1,activation='sigmoid')
         self.f0_branch = TimeDistributed(Dense(num_bins-1,activation='softmax'))
        
@@ -158,6 +253,31 @@ val_acc_metric = tf.keras.metrics.BinaryAccuracy()
 #################################################
 
 def calculate_expected_value(pred_vd,pred_probs):
+    """
+    Computes the expected frequency (in Hz) from predicted pitch class probabilities,
+    conditioned on the voicing detection output.
+
+    This function calculates the expected value over frequency bins (in log2 domain) using
+    a weighted sum of predicted pitch class probabilities. The final expected frequency is
+    converted to Hz and masked based on the voicing predictions — only values with 
+    voicing probability ≥ 0.5 are retained.
+
+    Parameters
+    ----------
+    pred_vd : tf.Tensor
+        A tensor containing voicing predictions (values in [0, 1]).
+
+    pred_probs : tf.Tensor
+        A 3D tensor of shape (batch_size, time_steps, num_bins - 1), representing the
+        predicted pitch class probability distribution per time frame.
+
+    Returns
+    -------
+    tf.Tensor
+        A 2D tensor of shape (batch_size, time_steps) containing expected frequency values in Hz.
+        Frequencies are set to 0 where voicing probability is below 0.5.
+    """
+
     pred_vd = tf.reshape(pred_vd, [tf.shape(pred_vd)[0], -1]) 
     
     weighted_sum = tf.reduce_sum(bin_borders_log[:-1] * pred_probs, axis=-1) 
