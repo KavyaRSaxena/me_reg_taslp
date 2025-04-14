@@ -11,21 +11,24 @@ cd me_reg_taslp
 ```
 
 # Usage
-To test the different models, go to the test directory
+To test the different methods, go to the test directory
 ```
 cd testing_codes
 ```
-To test the M1 model:
+To test the M1 method:
 ```
 python3 M1.py 
 ```
 
-To test the M2 model:
+To test the M2 method:
 ```
 python3 M2.py 
 ```
 
-To test the M3 model:
+To test the M3 method:
 ```
 python3 M3.py 
 ```
+
+# Pre-trained Models
+The pre-trained models for each method are present in **model_weights** folder.
