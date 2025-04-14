@@ -19,7 +19,7 @@ To test the different methods, go to the test directory
 ```
 cd testing_codes
 ```
-To test the M1 method:
+> To test the M1 method:
 ```
 python3 M1.py 
 ```
