@@ -24,12 +24,12 @@ cd testing_codes
 python3 M1.py 
 ```
 
-To test the M2 method:
+> To test the M2 method:
 ```
 python3 M2.py 
 ```
 
-To test the M3 method:
+> To test the M3 method:
 ```
 python3 M3.py 
 ```
