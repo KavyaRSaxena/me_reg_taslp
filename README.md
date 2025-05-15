@@ -9,23 +9,27 @@ This repository provides three regression-based methods(M1, M2, and M3) for melo
 git clone https://github.com/KavyaRSaxena/me_reg_taslp
 cd me_reg_taslp
 ```
+## Install Dependencies
+```
+pip install -r requirements.txt
+```
 
 # Usage
 To test the different methods, go to the test directory
 ```
 cd testing_codes
 ```
-To test the M1 method:
+> To test the M1 method:
 ```
 python3 M1.py 
 ```
 
-To test the M2 method:
+> To test the M2 method:
 ```
 python3 M2.py 
 ```
 
-To test the M3 method:
+> To test the M3 method:
 ```
 python3 M3.py 
 ```
@@ -34,7 +38,7 @@ python3 M3.py
 The pre-trained models for each method are present in the **model_weights** folder.
 
 # Datasets
-The test datasets used are: [ADC2004](http://labrosa.ee.columbia.edu/projects/melody/), [MIREX05](http://labrosa.ee.columbia.edu/projects/melody/), and [HAR](https://zenodo.org/records/8252222)
+The test datasets used are: [ADC2004](http://labrosa.ee.columbia.edu/projects/melody/), [MIREX05](http://labrosa.ee.columbia.edu/projects/melody/), and [HAR](https://zenodo.org/records/8252222) (t2 teacher)
 
 # Citation
 If you find our work useful, please cite:
