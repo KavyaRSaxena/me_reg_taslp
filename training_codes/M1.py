@@ -20,23 +20,29 @@ from sklearn.model_selection import train_test_split
 import time
 import mir_eval
 import gc
+import matplotlib.pyplot as plt
 import time
 import pdb
 import keras
 from tqdm import tqdm
-from scipy.signal import find_peaks
-import scipy.stats as stats
-from scipy.stats import norm
 
-os.environ["CUDA_VISIBLE_DEVICES"]="2" #0
+os.environ["CUDA_VISIBLE_DEVICES"]="0" #0
 physical_devices = tf.config.list_physical_devices('GPU')
 print(physical_devices)
 tf.config.experimental.set_memory_growth(physical_devices[0], True)
 
 #################################################
 
-test_audio_files = ' ' #path of audio data
-test_pitch_files = ' ' #path of pitch data in Hz
+train_audio_files = ' ' #path of audio data 
+train_bin_probs_files = ' ' #path of bin probability corresponding to each pitch data 
+train_pitch_files = ' ' #path of pitch data in Hz
+
+val_audio_files = ' ' #path of audio data
+val_bin_probs_files = ' ' #path of bin probability corresponding to each pitch data 
+val_pitch_files = ' ' #path of pitch data in Hz
+
+print('Total train audio and pitch files:',len(train_audio_files), len(train_bin_probs_files), len(train_pitch_files),'\n')
+print('Total val audio and pitch files:',len(val_audio_files),len(val_bin_probs_files),len(val_pitch_files),'\n')
 
 #################################################
 batch_size = 16
@@ -52,6 +58,8 @@ freq_max = 830.61
 B = 96  # no. of semitones
 
 num_semitones = int(B*np.log2(freq_max/freq_min))
+print(f'No. of semitones..{num_semitones}')
+
 bin_borders = []
 
 for i in range(num_semitones+1):
@@ -87,6 +95,21 @@ def preprocess_wav(wav_path):
     X = np.load(wav_path.numpy().decode())
     return X
 
+def preprocess_binprobs(bin_probs_path):
+    """
+    Loads and returns binary probability data from a NumPy file.
+
+    Parameters:
+    bin_probs_path (tf.Tensor): A TensorFlow string tensor representing the path to a .npy file
+                                containing binary probability data. The path is decoded to a 
+                                standard string before loading.
+
+    Returns:
+    np.ndarray: A NumPy array containing the loaded probability data corresponding to each pitch value.
+    """
+
+    X = np.load(bin_probs_path.numpy().decode())
+    return X
 
 def preprocess_pitch(pitch_path):
     """
@@ -102,7 +125,7 @@ def preprocess_pitch(pitch_path):
     np.ndarray
         A NumPy array containing pitch values in Hertz (Hz).
     """
-    
+
     X = np.load(pitch_path.numpy().decode())
     return X
 
@@ -218,6 +241,7 @@ class melody_extraction(Model):
         self.rb2 = ResNet_block(64)
         self.rb3 = ResNet_block(128)
         self.rb4 = ResNet_block(256)
+        self.bi = Bidirectional(LSTM(256, return_sequences=True, recurrent_dropout=0.3, dropout=0.3))
         self.td1 = TimeDistributed(Dense(num_bins-1,activation='softmax'))
        
     def call(self,x):
@@ -228,6 +252,7 @@ class melody_extraction(Model):
         
         P = x.shape[2] * x.shape[3]
         intermediate = Reshape((win_size, P))(x)
+        # x = self.bi(x)
         x = self.td1(intermediate)
         return x,intermediate
 
@@ -237,162 +262,52 @@ class melody_extraction(Model):
 
 
 model = melody_extraction()
-model.build_graph([win_size,int(Nfft/2)+1,1])#.summary()
-model.load_weights('../model_weights/M1/weights')
+model.build_graph([win_size,int(Nfft/2)+1,1]).summary()
 
 #################################################
-
-l_rate = 1.e-4
+l_rate = 1.e-5
+optimizer = keras.optimizers.Adam(learning_rate=l_rate) 
 loss_fn = keras.losses.CategoricalCrossentropy()
-test_acc_metric = keras.metrics.CategoricalAccuracy()
 
+# Prepare the metrics.
+train_acc_metric = keras.metrics.CategoricalAccuracy()
+val_acc_metric = keras.metrics.CategoricalAccuracy()
+
+epochs = 100
 #################################################
 
-def findpeaks(fx):
+def custom_loss(yt,yp,vd):
     """
-    Identifies and returns the indices of peaks in a 1D array.
+    Computes a weighted histogram loss to address class imbalance using custom class weights.
 
-    A peak is defined as a point that is higher than its immediate neighbors. 
-    This function prepends a 0 to the input array to align indexing, then adjusts 
-    the indices of the detected peaks accordingly.
+    The function calculates weights based on the distribution of binary values in `vd`.
+    It assigns higher weight to the less frequent class to mitigate imbalance, then applies
+    these weights when computing the loss.
 
-    Parameters
-    ----------
-    fx : np.ndarray
-        A 1D NumPy array of numerical values in which to find peaks.
+    Parameters:
+    yt (tf.Tensor): Ground truth labels.
+    yp (tf.Tensor): Predicted labels.
+    vd (tf.Tensor): A tensor indicating class presence (e.g., a binary mask). 
+                    Non-zero values are treated as class 1, and zeros as class 0.
 
-    Returns
-    -------
-    np.ndarray
-        An array of indices corresponding to the positions of the peaks in the original input array.
-    """
-
-    fx = np.insert(fx,0,0)
-    peaks, _ = find_peaks(fx, height=0)
-    peaks = peaks-1
-    return peaks
-
-def find_max_peak(indx,pred_fx):
-    """
-    Finds the index of the highest peak from a list of peak indices.
-
-    Parameters
-    ----------
-    indx : np.ndarray
-        An array of indices representing the positions of detected peaks.
-    
-    pred_fx : np.ndarray
-        A 1D array of values (e.g., prediction amplitudes) from which the peaks were identified.
-
-    Returns
-    -------
-    int
-        The index corresponding to the peak with the maximum value in `pred_fx`.
+    Returns:
+    tf.Tensor: The computed weighted histogram loss.
     """
 
-    indxs = indx[np.argmax(pred_fx[indx])]
-    return indxs
-
-
-def get_scaled_up_probabilties(f, indices_to_zero):
-    """
-    Sets specified indices in a probability distribution to zero and rescales the remaining values to sum to 1.
-
-    This function is useful when certain probabilities (e.g., at specific indices) need to be excluded 
-    from consideration, and the remaining values should be re-normalized to maintain a valid probability distribution.
-
-    Parameters
-    ----------
-    f : np.ndarray
-        A 1D NumPy array representing a probability distribution (should sum to 1 before modification).
-    
-    indices_to_zero : array-like
-        Indices in `f` that should be set to zero (i.e., excluded from the distribution).
-
-    Returns
-    -------
-    np.ndarray
-        A new probability distribution where the specified indices are zeroed out and 
-        the remaining values are scaled to sum to 1.
-
-    Raises
-    ------
-    ValueError
-        If the sum of the remaining (non-zeroed) values is zero, making normalization impossible.
-    """
-
-    f[indices_to_zero] = 0  # make q at ksup = 0  
-    remaining_sum = np.sum(f)  # 1-p(ksup)
-    if remaining_sum > 0:
-        f = f / remaining_sum
+    vd = tf.cast(tf.where(vd!=0, tf.ones_like(vd),vd),dtype=tf.int32)
+    count_ones = tf.math.count_nonzero(vd)
+    count_zeros = np.size(vd) - count_ones
+    if count_zeros==0:
+        class_weights = [0,1]
+    elif count_ones==0:
+        class_weights = [1,0]
     else:
-        raise ValueError("The sum of the remaining probabilities is zero.")
-    return f
-
+        class_counts = [count_zeros,count_ones]
+        class_weights = [max(class_counts)/count_zeros, max(class_counts)/count_ones]
     
-def find_pruned_expected_val(fx):
-    """
-    Computes the pruned expected frequency values in Hz from predicted probability distributions over frequency bins.
-
-    This function processes a 3D array of predicted bin probabilities, identifies peaks in each distribution,
-    prunes undesired regions based on peak comparisons, rescales the remaining probabilities, and computes the 
-    expected frequency in the log domain. The final expected values are then converted to frequencies in Hz.
-
-    Peak pruning logic is applied based on whether the peak at index 0 has greater, lesser, or equal probability 
-    compared to the maximum peak. The corresponding region around the less relevant peaks is zeroed out and the 
-    distribution is renormalized.
-
-    Parameters
-    ----------
-    fx : tf.Tensor
-        A 3D TensorFlow tensor of shape (batch_size, time_steps, num_bins) representing predicted 
-        probability distributions over frequency bins for each frame.
-
-    Returns
-    -------
-    np.ndarray
-        A 2D NumPy array of shape (batch_size, time_steps) containing the predicted frequency values in Hz 
-        after pruning and expected value computation.
-
-    Raises
-    ------
-    ValueError
-        If, during pruning, the sum of the remaining probabilities becomes zero (handled inside get_scaled_up_probabilities).
-    """
-
-    #fx --> predicted bin prob, expected_val --> predicted log freq, ypred --> predicted freq hz
-
-    fx = fx.numpy()
-    expected_val = np.zeros((np.shape(fx)[0],np.shape(fx)[1]),dtype=float)
-
-    for k in range(np.shape(fx)[0]):
-        for j in range(np.shape(fx)[1]):
-            peaks = findpeaks(fx[k][j])
-
-            if 0 in peaks and len(peaks)>1:
-                max_peak = find_max_peak(peaks,fx[k][j])
-
-                if fx[k][j][0]>fx[k][j][max_peak]:
-                    fx[k][j] = get_scaled_up_probabilties(fx[k][j],np.arange(max_peak-10,max_peak+10))
-
-                elif fx[k][j][0]<fx[k][j][max_peak]:
-                    fx[k][j] = get_scaled_up_probabilties(fx[k][j],np.arange(10))
-                
-                elif fx[k][j][0]==fx[k][j][max_peak]:
-                    for p in peaks[1:]:
-                        if 2<=p<=10:
-                            fx[k][j] = get_scaled_up_probabilties(fx[k][j],np.arange(p-1,p+10))
-                        elif 400<p<435:
-                            fx[k][j] = get_scaled_up_probabilties(fx[k][j],np.arange(p-10,p))
-                        else:
-                            fx[k][j] = get_scaled_up_probabilties(fx[k][j],np.arange(p-10,p+10))
-
-            expected_val[k,j] = sum([(bin_borders_log[i])*f for i,f in enumerate(fx[k][j])])
-                    
-    freq_hz = freq_min * np.power(2,expected_val)  ## convert log values to hz
-    threshold = freq_min*np.power(2,-0.5/B)
-    freq_hz[freq_hz<threshold] = 0
-    return freq_hz
+    w = tf.gather(class_weights,vd)
+    loss = loss_fn(yt, yp, sample_weight=w)
+    return loss
 
 
 def find_expected_val(fx):
@@ -415,7 +330,6 @@ def find_expected_val(fx):
         A 2D NumPy array of shape (batch_size, time_steps) containing the expected frequency values in Hz.
     """
 
-
     fx = fx.numpy()
     expected_val = np.zeros((np.shape(fx)[0],np.shape(fx)[1]),dtype=float)
     for k in range(np.shape(fx)[0]):
@@ -428,12 +342,21 @@ def find_expected_val(fx):
     return expected_val
     
 
-def test_step(x):
+def train_step(x,bin_probs,gfv):
     with tf.GradientTape() as tape:
         pred_fx,_ = model.call(x)
-        # efv = find_pruned_expected_val(pred_fx) # can predict before and after pruning P(M1)
-        efv = find_expected_val(pred_fx)
-    return efv
+        loss = custom_loss(bin_probs,pred_fx,gfv)
+    grads = tape.gradient(loss,model.trainable_variables)
+    optimizer.apply_gradients(zip(grads,model.trainable_variables))
+    expected_value = find_expected_val(pred_fx)
+    return loss,expected_value
+
+def test_step(x,bin_probs,gfv):
+    with tf.GradientTape() as tape:
+        pred_fx,_ = model.call(x)
+        loss = custom_loss(bin_probs,pred_fx,gfv)
+        expected_value = find_expected_val(pred_fx)
+    return loss,expected_value
 
 
 def calc_rpa(y,yp):
@@ -461,28 +384,102 @@ def calc_rpa(y,yp):
     
 ################################################# 
 
-mean = np.load('../total_mean.npy')
-std = np.load('../total_std.npy')
+val_dataset = tf.data.Dataset.from_tensor_slices((val_audio_files,val_bin_probs_files,val_pitch_files)) 
+val_dataset = val_dataset.map(lambda wav,probs,pitch: (tf.py_function(preprocess_wav,[wav],tf.float32),tf.py_function(preprocess_binprobs,[probs],tf.float32),
+                                                tf.py_function(preprocess_pitch,[pitch],tf.float32)),num_parallel_calls=tf.data.experimental.AUTOTUNE)
+val_dataset = val_dataset.batch(1).prefetch(tf.data.AUTOTUNE)
 
 #################################################
 
-rpa_test = []
-rca_test = []
-oa_test = []
+mean = np.load('../total_mean.npy')
+std = np.load('../total_std.npy')
 
-test_dataset = tf.data.Dataset.from_tensor_slices((test_audio_files,test_pitch_files)) 
-test_dataset = test_dataset.map(lambda wav,pitch: (tf.py_function(preprocess_wav,[wav],tf.float32), tf.py_function(preprocess_pitch,[pitch],tf.float32)),num_parallel_calls=tf.data.experimental.AUTOTUNE)
-test_dataset = test_dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+weights_path = '../model_weights/M1/'
 
-for step,batch in enumerate(test_dataset):
-    x,gfv = batch
-    x = (x-mean)/std        
-    x = x[:,:,:,tf.newaxis]
-    efv = test_step(x)
-    rpa,rca,oa = calc_rpa(gfv,efv)
+os.makedirs(weights_path, exist_ok=True)
 
-    rpa_test.append(rpa)
-    rca_test.append(rca)
-    oa_test.append(oa)
+filepath = weights_path + 'weights'
 
-print(f'Metrics on the test dataset:  RPA-{np.mean(np.array(rpa_test))} RCA-{np.mean(np.array(rca_test))} OA-{np.mean(np.array(oa_test))}')
+#################################################
+    
+rpa_train_epoch = []
+rca_train_epoch = []
+oa_train_epoch = []
+
+rpa_val_epoch = []
+rca_val_epoch = []
+oa_val_epoch = []
+
+train_loss_epoch = []
+val_loss_epoch = []
+
+k = 1
+
+for epoch in tqdm(range(epochs)):
+    print(f'Epoch...{epoch+1}')  
+    tot_time = np.array([])   
+    
+    train_dataset = tf.data.Dataset.from_tensor_slices((train_audio_files,train_bin_probs_files,train_pitch_files)).shuffle(len(train_audio_files))
+    train_dataset = train_dataset.map(lambda wav,probs,pitch: (tf.py_function(preprocess_wav,[wav],tf.float32),tf.py_function(preprocess_binprobs,[probs],tf.float32),
+                                                    tf.py_function(preprocess_pitch,[pitch],tf.float32)),num_parallel_calls=tf.data.experimental.AUTOTUNE)
+    train_dataset = train_dataset.batch(batch_size) 
+      
+    rpa_train_batch = []  
+    rca_train_batch = []  
+    oa_train_batch = []  
+
+    loss_train_batch = []
+    loss_val_batch = []
+    
+    for step,batch in enumerate(train_dataset):
+        x,bin_probs,gfv = batch
+        x = (x-mean)/std        
+        x = x[:,:,:,tf.newaxis]
+        loss_value,expected_value = train_step(x,bin_probs,gfv)
+        rpa,rca,oa = calc_rpa(gfv,expected_value)
+        rpa_train_batch.append(rpa)
+        rca_train_batch.append(rca)
+        oa_train_batch.append(oa)
+        loss_train_batch.append(loss_value)
+        if (step+1)%2==0:
+            break
+
+    print(f'Training Loss per epoch..{np.mean(np.array(loss_train_batch))}')  
+    train_loss_epoch.append(np.mean(np.array(loss_train_batch)))
+    print(f'Train data - RPA : {np.mean(np.array(rpa_train_batch))} RCA : {np.mean(np.array(rca_train_batch))} OA : {np.mean(np.array(oa_train_batch))}')
+    rpa_train_epoch.append(np.mean(np.array(rpa_train_batch)))
+    rca_train_epoch.append(np.mean(np.array(rca_train_batch))) 
+    oa_train_epoch.append(np.mean(np.array(oa_train_batch))) 
+ 
+    rpa_val_batch = []
+    rca_val_batch = []
+    oa_val_batch = []
+
+    for step,batch in enumerate(val_dataset):
+        x,bin_probs,gfv = batch
+        x = (x-mean)/std 
+        x = x[:,:,:,tf.newaxis]
+        val_loss,expected_value = test_step(x,bin_probs,gfv)
+        rpa,rca,oa = calc_rpa(gfv,expected_value)
+        rpa_val_batch.append(rpa)
+        rca_val_batch.append(rca)
+        oa_val_batch.append(oa)
+        loss_val_batch.append(val_loss)
+        if (step+1)%2==0:
+            break
+
+    print(f'Validation Loss per epoch..{np.mean(np.array(loss_val_batch))}')  
+    val_loss_epoch.append(np.mean(np.array(loss_val_batch)))
+    print(f'Validation data - RPA : {np.mean(np.array(rpa_val_batch))} RCA : {np.mean(np.array(rca_val_batch))} OA : {np.mean(np.array(oa_val_batch))}')
+    rpa_val_epoch.append(np.mean(np.array(rpa_val_batch)))
+    rca_val_epoch.append(np.mean(np.array(rca_val_batch)))
+    oa_val_epoch.append(np.mean(np.array(oa_val_batch)))
+
+    if (epoch+1)%20==0:
+        l_rate = np.round(math.pow(0.90,k),3) * l_rate
+        optimizer = keras.optimizers.Adam(learning_rate=l_rate)
+        k+=1
+
+model.save_weights(filepath,save_format='tf')
+print('Model Saved')        
+
