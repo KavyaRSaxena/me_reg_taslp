@@ -37,11 +37,11 @@ tf.config.experimental.set_memory_growth(physical_devices[0], True)
 
 #################################################
 
-train_audio_files = ' '
-train_pitch_files = ' '
+train_audio_files = ' ' #path of audio data
+train_pitch_files = ' ' #path of pitch data in Hz
 
-val_audio_files = ' '
-val_pitch_files = ' '
+val_audio_files = ' ' #path of audio data
+val_pitch_files = ' ' #path of pitch data in Hz
 
 print('Total train audio and pitch files:',len(train_audio_files), len(train_pitch_files),'\n')
 print('Total val audio and pitch files:',len(val_audio_files), len(val_pitch_files),'\n')
