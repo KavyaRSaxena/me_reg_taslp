@@ -37,11 +37,11 @@ tf.config.experimental.set_memory_growth(physical_devices[0], True)
 
 #################################################
 
-train_audio_files = sorted(glob('/hdd_storage/data/kavyars2/Datasets/SPL/npy_data/train/audio/*.npy'))
-train_pitch_files = sorted(glob('/hdd_storage/data/kavyars2/Datasets/SPL/npy_data/train/pitch/*.npy'))
+train_audio_files = ' '
+train_pitch_files = ' '
 
-val_audio_files = sorted(glob('/hdd_storage/data/kavyars2/Datasets/SPL/npy_data/val/audio/*.npy'))
-val_pitch_files = sorted(glob('/hdd_storage/data/kavyars2/Datasets/SPL/npy_data/val/pitch/*.npy'))
+val_audio_files = ' '
+val_pitch_files = ' '
 
 print('Total train audio and pitch files:',len(train_audio_files), len(train_pitch_files),'\n')
 print('Total val audio and pitch files:',len(val_audio_files), len(val_pitch_files),'\n')
